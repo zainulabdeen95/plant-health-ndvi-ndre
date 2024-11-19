@@ -29,12 +29,14 @@ def reclassify_raster(input_path, output_path, report, threshold=0.2):
         if report == "ndvi":
 
             # Reclassifying based on thresholds for NDVI & GCI
+            arr = np.where(arr <= val1, 1, arr)
             arr = np.where((arr > val1) & (arr <= val2), 2, arr)
             arr = np.where((arr > val2) & (arr <= val3), 3, arr)
             arr = np.where((arr > val3) & (arr < 1), 4, arr)
 
         elif report == "ndre":
             # Reclassifying based on thresholds for NDRE
+            arr = np.where(arr <= val1, 1, arr)
             arr = np.where((arr > val1) & (arr <= val2), 2, arr)
             arr = np.where((arr > val2) & (arr < 1), 3, arr)
         
