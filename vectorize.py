@@ -1,80 +1,94 @@
-import os
-import glob
+from osgeo import gdal, ogr
 import numpy as np
-import rasterio
-from rasterio import features
-from shapely.geometry import shape
-import fiona
-from fiona.crs import from_epsg
-from collections import defaultdict
 
-def polygonize_raster_with_predicted(raster_path, output_folder, report):
-    # Load the raster data
-    with rasterio.open(raster_path) as src:
-        if src is None:
-            print(f"Skipping invalid raster file: {raster_path}")
-            return
+import math  # For NaN (Not a Number)
 
-        print(f"Processing raster file: {raster_path}")
-
-        if report == 'ndvi':
-            # Define the DN to predicted mapping for NDVI
-            dn_to_predicted = {1: 220, 2: 221, 3: 222, 4: 223}
-
-        elif report == 'ndre':
-            # Define the DN to predicted mapping for NDRE
-            dn_to_predicted = {1: 228, 2: 229, 3: 230}
+def vectorize_tif(input_tif, output_shapefile, Values_Dict):
+    """
+    Vectorizes a raster (GeoTIFF) into polygons, adding a 'range' column for the DN values
+    from the Values_Dict and a 'mean' column for each DN value from the Mean_Dict.
+    
+    :param input_tif: Path to the input TIFF file (raster).
+    :param output_shapefile: Path to the output shapefile where the vectorized polygons will be saved.
+    :param Values_Dict: A dictionary mapping DN values to ranges (e.g., {'1': '0.0 - 0.14'}).
+    :param Mean_Dict: A dictionary mapping DN values to mean values (e.g., {'1': 0.13, '2': 0.4}).
+    """
+    # Open the input TIFF file using GDAL
+    dataset = gdal.Open(input_tif)
+    
+    if dataset is None:
+        raise FileNotFoundError(f"Could not open the input TIFF file: {input_tif}")
+    
+    # Get the raster band (assuming single-band raster for simplicity)
+    band = dataset.GetRasterBand(1)
+    
+    # Get the projection (spatial reference system) from the input TIFF
+    projection = dataset.GetProjection()
+    
+    # Create an in-memory shapefile driver to save vector output
+    driver = ogr.GetDriverByName('ESRI Shapefile')
+    
+    if driver is None:
+        raise RuntimeError("ESRI Shapefile driver not available.")
+    
+    # Create the shapefile and define a polygon layer
+    output_ds = driver.CreateDataSource(output_shapefile)
+    
+    if output_ds is None:
+        raise RuntimeError(f"Could not create shapefile: {output_shapefile}")
+    
+    # Set the spatial reference (projection) for the output shapefile
+    spatial_ref = ogr.osr.SpatialReference(wkt=projection)
+    
+    # Define the layer to store polygons, with the same spatial reference
+    layer = output_ds.CreateLayer('polygonized_layer', geom_type=ogr.wkbPolygon, srs=spatial_ref)
+    
+    if layer is None:
+        raise RuntimeError(f"Could not create layer in shapefile: {output_shapefile}")
+    
+    # Create the 'DN' field in the attribute table of the shapefile
+    field_dn = ogr.FieldDefn('predicted', ogr.OFTInteger)  # Assuming the raster values are integers
+    layer.CreateField(field_dn)
+    
+    # Create the 'range' field to store the corresponding range from Values_Dict
+    field_range = ogr.FieldDefn('range', ogr.OFTString)
+    layer.CreateField(field_range)
+    
+    # Create the 'mean' field to store the Mean_Value
+    # field_mean = ogr.FieldDefn('mean', ogr.OFTReal)
+    # layer.CreateField(field_mean)
+    
+    # Read the raster data into an array
+    raster_data = band.ReadAsArray()
+    
+    # Create a mask where we keep only values 1, 2, 3, 4 and set others to a background value (e.g., -1)
+    mask = (raster_data == 1) | (raster_data == 2) | (raster_data == 3) | (raster_data == 4)
+    raster_data[~mask] = -1  # Set all non-1,2,3,4 values to -1
+    
+    # Update the band with the filtered data (optional, depending on if you want to change the raster)
+    band.WriteArray(raster_data)
+    
+    # Use the polygonize function to convert the raster to polygons, now with filtered values
+    gdal.Polygonize(band, None, layer, layer.GetLayerDefn().GetFieldIndex('predicted'), [], callback=None)
+    
+    # Iterate over each feature in the layer to add 'range' and 'mean' values
+    for feature in layer:
+        # Get the DN value of the feature
+        dn_value = feature.GetField('predicted')
         
-        # Read the raster's first band (assuming single band raster)
-        band = src.read(1)
+        # Get the corresponding range from Values_Dict
+        range_value = Values_Dict.get(str(dn_value), 'Unknown')  # Default to 'Unknown' if not found
         
-        # Mask out values that are zero (they are usually no-data values)
-        mask = band != 0
+        # Set the 'range' and 'mean' fields
+        feature.SetField('range', range_value)
+        
+        # Update the feature in the layer
+        layer.SetFeature(feature)
+    
+    # Close datasets
+    output_ds = None
+    dataset = None
 
-        # Use rasterio's features.polygonize to convert raster to polygons
-        results = list(features.shapes(band, mask=mask, transform=src.transform))
-
-        # Prepare the output shapefile path
-        output_path = os.path.join(output_folder, os.path.basename(raster_path).replace('.tif', '.shp'))
-
-        # Define schema for the shapefile: we need 'DN' and 'predicted' fields
-        schema = {
-            'geometry': 'Polygon',
-            'properties': {'predicted': 'int'}
-        }
-
-        # Open the output shapefile for writing
-        with fiona.open(output_path, 'w', driver='ESRI Shapefile', crs=from_epsg(src.crs.to_epsg()), schema=schema) as output:
-            for geom, value in results:
-                # Only process non-zero values
-                if value == 0:
-                    continue
-
-                # Create the feature: use shapely for geometry handling
-                polygon = shape(geom)
-
-                # Map the DN value to the predicted value
-                predicted_value = dn_to_predicted.get(value, None)
-
-                # Only write the feature if there is a valid 'predicted' value
-                if predicted_value is not None:
-                    output.write({
-                        'geometry': polygon.__geo_interface__,
-                        'properties': {'predicted': predicted_value}
-                    })
-
-        print(f"Polygonized shapefile created successfully at {output_path}")
-
-def process_rasters_in_directory(input_directory, output_folder, report):
-    # List all raster files in the directory (assuming .tif format)
-    raster_files = glob.glob(os.path.join(input_directory, '*.tif'))
-
-    if not raster_files:
-        print("No raster files found in the directory.")
-        return
-
-    # Process each raster file
-    for raster_file in raster_files:
-        polygonize_raster_with_predicted(raster_file, output_folder, report)
+    print(f"Vectorization completed. Shapefile saved as {output_shapefile}")
 
 
