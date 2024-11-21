@@ -19,6 +19,7 @@ from dissolve import dissolve_geojson_by_predicted
 from calculate_stats import process_files_stats
 from add_mean_values import calculate_mean_ndre
 # from merge_vectors import merge_shapefiles
+from update_predict_column import update_shapefile_values
 
 
 # Define the possible reports
@@ -96,7 +97,7 @@ for report in reports:
     output_path = f"outputs/cleaned_final/{report}_{aoi_name}_cleaned.shp"
     filter_shapefile(input_path, output_path)
 
-
+    update_shapefile_values(output_path, report)
 
 
 
