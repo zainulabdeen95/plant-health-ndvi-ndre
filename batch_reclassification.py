@@ -166,7 +166,9 @@ def reclassify_ndre(arr, threshold, no_data_value):
         sd = np.std(filtered_array, axis=0)
         sd_half = sd / 2
         val1 = mean - sd_half
-        val2 = mean
+        val2 = mean + sd_half
+        # TODO: val2 is changed, same is implemented in all other functions
+        # var3 = mean + sd_half
 
         # Reclassify only the non-masked (valid) pixels
         arr = np.select(
